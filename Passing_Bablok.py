@@ -33,25 +33,15 @@ import seaborn as sns
 from scipy.stats import norm
 import math
 import sys
-from scipy import stats
-from statsmodels.sandbox.regression.predstd import wls_prediction_std
-import statsmodels.api as sm
-from patsy import dmatrices
 import matplotlib.patches as mpatches
-import matplotlib
 
 # add the uncertainties package!
-from uncertainties import ufloat
-from uncertainties.umath import *  # sin(), etc.
 from uncertainties import unumpy
-import uncertainties as ucert
 
 sns.set_context("talk")
 
 # import resampling tool for bootstrapping of confidence intervals --> sci-kit-learn
 from sklearn.utils import resample
-# normal distribution for inverse CDF
-from scipy.stats import norm
 
 # Make a color dictionary, to be used during plotting
 color_dict = { 'Blazhko':'orange', 'RRLyr':'blue'}
@@ -73,49 +63,89 @@ def convert_uncert_df_to_nom_err(df):
     return nom,err
 
 def Passing_Bablok_Regression_Ref(df):
-    # Data to be passed on should be in a dataframe like the one created in the cell above! (nameddf/df)
     df_copy = df.copy()
     df_copy = df_copy.drop(['RRAB/RRC','Blazhko/RRLyr'])
     nom_plx,err_plx = convert_uncert_df_to_nom_err(df_copy)
-    Ref = nom_plx.loc["GAIA"].values # parallaxes obtained by GAIA method
-    eRef = err_plx.loc["GAIA"].values # errors
-    # list the different dereddening methods
-    methodlist = list(df_copy.index)[0:3]
+    if len(nom_plx) > 4:
+        methodlist1 = list(df_copy.index)[0:3] # first method
+        methodlist2 = list(df_copy.index)[3:6] # second method to be compared against
+        for i in range(len(methodlist1)):
+            methodstring1 = methodlist1[i]
+            methodstring2 = methodlist2[i]
+            Compare = nom_plx.loc[methodstring1].values # parallaxes obtained by first method
+            eCompare = err_plx.loc[methodstring1].values # errors
+            Ref = nom_plx.loc[methodstring2].values # parallaxes obtained by second method
+            # obtain the slopes
+            slopes,sortedindices,sortedslopes,N = Slopes(Compare,Ref)
+            # obtain the biased estimator of beta: 'b'
+            b,Conf_bound_lower_beta,Conf_bound_higher_beta = estimate_beta(sortedslopes,Compare,N)
+            # obtain the estimate of alpha: 'a'
+            a,a_conf_low,a_conf_high = estimate_alpha(Compare,Ref,Conf_bound_lower_beta,Conf_bound_higher_beta,b)
+            # Linearity check matrices: score and distance matrix, sorted; also obtain the fitted values
+            sorted_distancematrix,sorted_scorematrix,fittedvalues,higher,lower,plx_indices = linearity_check_matrices(a,b,Compare,Ref)
+            # Sort colours, in order to make RRLyr/Blazhko differentiation
+            sorted_colours = df.loc["Blazhko/RRLyr"].values[plx_indices]
+            # calculating needed inputs for the plots assessing linearity --> ranks of distance matrix and the cusum statistic
+            x = range(1,len(sorted_distancematrix)+1) # ranks of the distance matrix
+            y = np.cumsum(sorted_scorematrix) # cumulative sum of the scores, needed for the cusum statistic
 
-    for i in range(len(methodlist)):
-        methodstring = methodlist[i]
-        Compare = nom_plx.loc[methodstring].values # parallaxes obtained by method to be compared
-        eCompare = err_plx.loc[methodstring].values # errors
-        # obtain the slopes
-        slopes,sortedindices,sortedslopes,N = Slopes(Compare,Ref)
-        # obtain the biased estimator of beta: 'b'
-        b,Conf_bound_lower_beta,Conf_bound_higher_beta = estimate_beta(sortedslopes,Compare,N)
-        # obtain the estimate of alpha: 'a'
-        a,a_conf_low,a_conf_high = estimate_alpha(Compare,Ref,Conf_bound_lower_beta,Conf_bound_higher_beta,b)
-        # Linearity check matrices: score and distance matrix, sorted; also obtain the fitted values
-        sorted_distancematrix,sorted_scorematrix,fittedvalues,higher,lower,plx_indices = linearity_check_matrices(a,b,Compare,Ref)
-        # Sort colours, in order to make RRLyr/Blazhko differentiation
-        sorted_colours = df.loc["Blazhko/RRLyr"].values[plx_indices]
-        # calculating needed inputs for the plots assessing linearity --> ranks of distance matrix and the cusum statistic
-        x = range(1,len(sorted_distancematrix)+1) # ranks of the distance matrix
-        y = np.cumsum(sorted_scorematrix) # cumulative sum of the scores, needed for the cusum statistic
+            # estimate regression bounds by error propagation --> CRUDE APPROXIMATION
+            low_bounds,high_bounds = estimate_regression_confidence(a,a_conf_low,a_conf_high,b,Conf_bound_lower_beta,Conf_bound_higher_beta,Compare,eCompare,fittedvalues)    
+            # Bootstrapping the confidence interval of fit:
+            bootstraps,B = semi_param_resampling(Ref,Compare,a,b)
+            bias = calculate_bias(Ref,Compare,a,b,bootstraps,B)
+            Q = calculate_Q(B,bias)
+            interval_bootstrap, neginterval_bootstrap = estimate_interval_pos(Ref,Compare,a,b,Q,B,bootstraps,interpolatedQ) # set interpolatedQ above
 
-        # estimate regression bounds by error propagation --> CRUDE APPROX
-        low_bounds,high_bounds = estimate_regression_confidence(a,a_conf_low,a_conf_high,b,Conf_bound_lower_beta,Conf_bound_higher_beta,Compare,eCompare,fittedvalues)    
-        # Bootstrapping the confidence interval of fit:
-        bootstraps,B = semi_param_resampling(Ref,Compare,a,b)
-        bias = calculate_bias(Ref,Compare,a,b,bootstraps,B)
-        Q = calculate_Q(B,bias)
-        interval_bootstrap, neginterval_bootstrap = estimate_interval_pos(Ref,Compare,a,b,Q,B,bootstraps,interpolatedQ) # set interpolatedQ above
+            # plot the first Passing-Bablok plot: comparison with identity line:
+            plot_comparison_identity(Compare,fittedvalues,low_bounds,high_bounds,methodstring1,interval_bootstrap,neginterval_bootstrap,methodstring2=methodstring2)
+            # plot the cusum statistic plots, assessing linearity:
+            plot_cusum_statistic(True,x,y,higher,lower,sorted_colours,methodstring1,methodstring2=methodstring2)
+            plot_cusum_statistic(False,x,y,higher,lower,sorted_colours,methodstring1,methodstring2=methodstring2)
+            
+            # Plot the regression residual plot, in terms of the rank
+            plot_regression_residuals(x,Ref,fittedvalues,plx_indices,sorted_colours,methodstring1,methodstring2=methodstring2)             
+            
+    else:
+        Ref = nom_plx.loc["GAIA"].values # parallaxes obtained by GAIA method
+        # eRef = err_plx.loc["GAIA"].values # errors
+        # list the different dereddening methods
+        methodlist = list(df_copy.index)[0:3]
 
-        # plot the first Passing-Bablok plot: comparison with identity line:
-        plot_comparison_identity(Compare,fittedvalues,low_bounds,high_bounds,methodstring,interval_bootstrap,neginterval_bootstrap)
-        # plot the cusum statistic plots, assessing linearity:
-        plot_cusum_statistic(True,x,y,higher,lower,sorted_colours,methodstring)
-        plot_cusum_statistic(False,x,y,higher,lower,sorted_colours,methodstring)
-        
-        # Plot the regression residual plot, in terms of the rank
-        plot_regression_residuals(x,Ref,fittedvalues,plx_indices,sorted_colours,methodstring)
+        for i in range(len(methodlist)):
+            methodstring = methodlist[i]
+            Compare = nom_plx.loc[methodstring].values # parallaxes obtained by method to be compared
+            eCompare = err_plx.loc[methodstring].values # errors
+            # obtain the slopes
+            slopes,sortedindices,sortedslopes,N = Slopes(Compare,Ref)
+            # obtain the biased estimator of beta: 'b'
+            b,Conf_bound_lower_beta,Conf_bound_higher_beta = estimate_beta(sortedslopes,Compare,N)
+            # obtain the estimate of alpha: 'a'
+            a,a_conf_low,a_conf_high = estimate_alpha(Compare,Ref,Conf_bound_lower_beta,Conf_bound_higher_beta,b)
+            # Linearity check matrices: score and distance matrix, sorted; also obtain the fitted values
+            sorted_distancematrix,sorted_scorematrix,fittedvalues,higher,lower,plx_indices = linearity_check_matrices(a,b,Compare,Ref)
+            # Sort colours, in order to make RRLyr/Blazhko differentiation
+            sorted_colours = df.loc["Blazhko/RRLyr"].values[plx_indices]
+            # calculating needed inputs for the plots assessing linearity --> ranks of distance matrix and the cusum statistic
+            x = range(1,len(sorted_distancematrix)+1) # ranks of the distance matrix
+            y = np.cumsum(sorted_scorematrix) # cumulative sum of the scores, needed for the cusum statistic
+    
+            # estimate regression bounds by error propagation --> CRUDE APPROXIMATION
+            low_bounds,high_bounds = estimate_regression_confidence(a,a_conf_low,a_conf_high,b,Conf_bound_lower_beta,Conf_bound_higher_beta,Compare,eCompare,fittedvalues)    
+            # Bootstrapping the confidence interval of fit:
+            bootstraps,B = semi_param_resampling(Ref,Compare,a,b)
+            bias = calculate_bias(Ref,Compare,a,b,bootstraps,B)
+            Q = calculate_Q(B,bias)
+            interval_bootstrap, neginterval_bootstrap = estimate_interval_pos(Ref,Compare,a,b,Q,B,bootstraps,interpolatedQ) # set interpolatedQ above
+    
+            # plot the first Passing-Bablok plot: comparison with identity line:
+            plot_comparison_identity(Compare,fittedvalues,low_bounds,high_bounds,methodstring,interval_bootstrap,neginterval_bootstrap)
+            # plot the cusum statistic plots, assessing linearity:
+            plot_cusum_statistic(True,x,y,higher,lower,sorted_colours,methodstring)
+            plot_cusum_statistic(False,x,y,higher,lower,sorted_colours,methodstring)
+            
+            # Plot the regression residual plot, in terms of the rank
+            plot_regression_residuals(x,Ref,fittedvalues,plx_indices,sorted_colours,methodstring)
     return 
 
 def Slopes(X,Y): # Slope function needed for Theil's/Passing-Bablok procedure. 
@@ -175,7 +205,7 @@ def linearity_check_matrices(a,b,Compare,Ref):
     fittedvalues = a + b*Compare # obtain the fitted values
     higher = len(Ref[Ref>fittedvalues]) # number of values above the regression line
     lower = len(Ref[Ref<fittedvalues]) # number of values below the regression line
-    same = len(Ref[Ref==fittedvalues]) # number of values on the regression line --> should be equal to zero or very low!
+    #same = len(Ref[Ref==fittedvalues]) # number of values on the regression line --> should be equal to zero or very low!
     
     # set up a score matrix of the values, needed for the test!
     scorematrix = np.copy(Ref)
@@ -207,7 +237,7 @@ def estimate_regression_confidence(a,a_conf_low,a_conf_high,b,Conf_bound_lower_b
     high_bounds = fittedvalues + high_bounds_sd
     return low_bounds,high_bounds
 
-def plot_comparison_identity(Compare,fittedvalues,low_bounds,high_bounds,methodstring,interval_bootstrap,neginterval_bootstrap):
+def plot_comparison_identity(Compare,fittedvalues,low_bounds,high_bounds,methodstring,interval_bootstrap,neginterval_bootstrap,methodstring2=False):
     sns.set_style('darkgrid')
     # obtain indices needed in order to properly display line plots!
     fittedsortindices = np.argsort(Compare)
@@ -219,17 +249,20 @@ def plot_comparison_identity(Compare,fittedvalues,low_bounds,high_bounds,methods
     plt.plot(Compare[fittedsortindices],low_bounds[fittedsortindices],c='k',ls='--',label='Conf. Bounds')
     plt.plot(Compare[fittedsortindices],high_bounds[fittedsortindices],c='k',ls='--')
     plt.plot(Compare[fittedsortindices],neginterval_bootstrap[fittedsortindices],c='m',ls='--',label='Conf. Bounds Bootstrap')
-    plt.plot(Compare[fittedsortindices],interval_bootstrap[fittedsortindices],c='m',ls='--')
-    x_string = methodstring + ' ' + r'$\varpi$'
-    plt.xlabel(x_string)
-    plt.ylabel('Gaia ' + r'$\varpi$')
-    plt.title('Fitted Gaia ' + r'$\varpi$' + ' in function of ' + methodstring + ' ' + r'$\varpi$')
+    plt.plot(Compare[fittedsortindices],interval_bootstrap[fittedsortindices],c='m',ls='--') 
+    plt.xlabel(methodstring + ' ' + r'$\varpi$')
+    if not methodstring2:
+        plt.ylabel('Gaia ' + r'$\varpi$')
+        plt.title('Fitted Gaia ' + r'$\varpi$' + ' in function of ' + methodstring + ' ' + r'$\varpi$')
+    else:
+        plt.ylabel(methodstring2 + ' ' + r'$\varpi$')
+        plt.title('Fitted '+ methodstring2+ ' ' + r'$\varpi$' + ' in function of ' + methodstring + ' ' + r'$\varpi$')        
     Legend = plt.legend(frameon=True, fancybox=True, framealpha=1.0)
     frame = Legend.get_frame()
     frame.set_facecolor('White')
     return
 
-def plot_cusum_statistic(absolute,x,y,higher,lower,sorted_colours,methodstring):
+def plot_cusum_statistic(absolute,x,y,higher,lower,sorted_colours,methodstring,methodstring2=False):
     # first plot of the cusum statistic, which should be moderate in order to indicate linearity.
     if absolute:
         # absolute value of cusum statistic, with 99% (red), 95% (orange), and 90% (black) confidence intervals
@@ -241,12 +274,15 @@ def plot_cusum_statistic(absolute,x,y,higher,lower,sorted_colours,methodstring):
         first_frame.set_facecolor('White')
         ax.add_artist(first_legend)
         ax.axhline(y = 0. ,c='k', ls='--')
-        ax.axhline(y = 1.63 * np.sqrt(higher+lower),label='1%',c='red')
-        ax.axhline(y = 1.36 * np.sqrt(higher+lower),label='5%',c='orange')
-        ax.axhline(y = 1.22 * np.sqrt(higher+lower),label='10%',c='k')
+        ax.axhline(y = 1.63 * np.sqrt(higher+lower),label='99%',c='red')
+        ax.axhline(y = 1.36 * np.sqrt(higher+lower),label='95%',c='orange')
+        ax.axhline(y = 1.22 * np.sqrt(higher+lower),label='90%',c='k')
         plt.xlabel('Rank i')
         plt.ylabel('|Cusum(i)|')
-        plt.title('Cusum statistic for P-B regression of ' + methodstring)
+        if not methodstring2:
+            plt.title('Cusum statistic for P-B regression of GAIA ' + r'$\varpi$' + ' in function of ' + methodstring + ' ' + r'$\varpi$' )
+        else:
+            plt.title('Cusum statistic for P-B regression of ' + methodstring + ' ' + r'$\varpi$' + ' vs ' + methodstring2 + ' ' + r'$\varpi$')
         Legend = plt.legend(loc=1, frameon=True, fancybox=True, framealpha=1.0)
         frame = Legend.get_frame()
         frame.set_facecolor('White')
@@ -260,21 +296,24 @@ def plot_cusum_statistic(absolute,x,y,higher,lower,sorted_colours,methodstring):
         second_frame.set_facecolor('White')
         axe.add_artist(second_legend)
         axe.axhline(y = 0. ,c='k', ls='--')
-        axe.axhline(y = 1.63 * np.sqrt(higher+lower),label='1%',c='red')
-        axe.axhline(y = 1.36 * np.sqrt(higher+lower),label='5%',c='orange')
-        axe.axhline(y = 1.22 * np.sqrt(higher+lower),label='10%',c='k')
+        axe.axhline(y = 1.63 * np.sqrt(higher+lower),label='99%',c='red')
+        axe.axhline(y = 1.36 * np.sqrt(higher+lower),label='95%',c='orange')
+        axe.axhline(y = 1.22 * np.sqrt(higher+lower),label='90%',c='k')
         axe.axhline(y = -1.63 * np.sqrt(higher+lower),c='red')
         axe.axhline(y = -1.36 * np.sqrt(higher+lower),c='orange')
         axe.axhline(y = -1.22 * np.sqrt(higher+lower),c='k')
         plt.xlabel('Rank i')
         plt.ylabel('Cusum(i)')
-        plt.title('Cusum statistic for P-B regression of ' + methodstring)
+        if not methodstring2:
+            plt.title('Cusum statistic for P-B regression of GAIA ' + r'$\varpi$' + ' in function of ' + methodstring + ' ' + r'$\varpi$' )
+        else:
+            plt.title('Cusum statistic for P-B regression of ' + methodstring2 + ' ' + r'$\varpi$' + ' in function of ' + methodstring + ' ' + r'$\varpi$')
         Second_Legend = plt.legend(loc=1, frameon=True, fancybox=True, framealpha=1.0)
         frame = Second_Legend.get_frame()
         frame.set_facecolor('White')
     return
 
-def plot_regression_residuals(x,Ref,fittedvalues,distance_indices,sorted_colours,methodstring):
+def plot_regression_residuals(x,Ref,fittedvalues,distance_indices,sorted_colours,methodstring,methodstring2=False):
     # figure containing regression residuals in terms of the same rank 
     plt.figure()
     axes = plt.gca()
@@ -286,19 +325,22 @@ def plot_regression_residuals(x,Ref,fittedvalues,distance_indices,sorted_colours
     plt.scatter(x,Ref[distance_indices]-fittedvalues[distance_indices],marker='x',color=[ color_dict[u] for u in sorted_colours])
     plt.xlabel('Rank i')
     plt.ylabel('Residuals')
-    plt.title('Regression Residuals for P-B regression of ' + methodstring)
+    if not methodstring2:
+        plt.title('Regression residuals for P-B regression of GAIA ' + r'$\varpi$' + ' in function of ' + methodstring + ' ' + r'$\varpi$' )
+    else:
+        plt.title('Regression residuals for P-B regression of ' + methodstring2 + ' ' + r'$\varpi$' + ' in function of ' + methodstring + ' ' + r'$\varpi$' )        
     return
 
 #------------------------------------------------------------------------------
 #                       Bootstrapping Definitions
 #------------------------------------------------------------------------------
 
-big = False
+big = True
 
 def semi_param_resampling(Ref,Compare,a,b): # MODEL: Ref = b*Compare + a
     # y = g(beta,x) + residuals
     # estimate of beta = est(beta) = ^beta = [b,a]
-    bootstraps = []  
+    bootstraps = []
     residuals = Ref - ((b*Compare) + a*np.ones(len(Compare)))# observed - predicted
     mean_res = np.mean(residuals)
     adjusted_residuals = residuals - mean_res*np.ones(len(residuals))
@@ -307,7 +349,8 @@ def semi_param_resampling(Ref,Compare,a,b): # MODEL: Ref = b*Compare + a
     else:
         B = 999 
     for i in range(B):
-        resampled_adjusted_residuals = resample(adjusted_residuals, n_samples=len(adjusted_residuals), random_state=i)
+        # resampling the adjusted residuals in a random way
+        resampled_adjusted_residuals = resample(adjusted_residuals, n_samples=len(adjusted_residuals),random_state=i)
         new_estimates = (b*Compare) + (a*np.ones(len(Compare))) + resampled_adjusted_residuals
         bootstraps.append(new_estimates)
     return bootstraps,B
@@ -321,7 +364,7 @@ def calculate_bias(Ref,Compare,a,b,bootstraps,B):
         for t in range(len(bootstraps)):
             strapper = bootstraps[t]
             tester.append(strapper[r])
-        tester = np.array(tester)
+        tester = np.array(tester,dtype=np.float128)
         p = len(tester[tester<test])
         bias.append(norm.ppf(np.float(p)/np.float(B)))
     return np.array(bias)
@@ -340,22 +383,29 @@ def estimate_interval_pos(Ref,Compare,a,b,Q,B,bootstraps,interpolatedQ):
     integerQ = np.array(integerQ)
     model_fits = (b*Compare) + a*np.ones(len(Compare))
     for e in range(len(model_fits)):
-        #test = model_fits[e]
-        #print test
         boots = []
         for d in range(len(bootstraps)):
             strappers = bootstraps[d]
             boots.append(strappers[e])
         boots = np.sort(np.array(boots))
         if interpolatedQ:
-            a = math.floor(Q[e])
-            b = a + 1
-            invcdfa = norm.ppf(a/(B+1))
-            invcdfb = norm.ppf(b/(B+1))
+            z = math.floor(Q[e])
+            r = z + 1
+            if z > len(boots)-1:
+                z -= 2
+                r -= 2
+            elif r > len(boots)-1:
+                z -= 1 
+                r -= 1
+            invcdfz = norm.ppf(z/(B+1))
+            invcdfr = norm.ppf(r/(B+1))
             invcdf = norm.ppf(Q[e]/(B+1))
-            interval.append(boots[int(a)] + ((invcdf - invcdfa)/(invcdfb-invcdfa))*(boots[int(b)]-boots[int(a)]))
+            interval.append(boots[int(z)] + ((invcdf - invcdfz)/(invcdfr-invcdfz))*(boots[int(r)]-boots[int(z)]))
         else:
-            interval.append(boots[integerQ[e]])
+            if integerQ[e] > len(boots):
+                interval.append(boots[len(boots)-1])
+            else:
+                interval.append(boots[integerQ[e]])
     interval = np.array(interval)
     delta = interval - model_fits
     neginterval = model_fits-delta
