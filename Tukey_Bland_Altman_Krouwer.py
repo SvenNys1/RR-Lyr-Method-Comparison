@@ -6,6 +6,12 @@
 
 # Description: Module that implements the Tukey's mean difference plots/Bland-Altman plots/Krouwer plots 
 # for the statistical comparison of the agreement of two methods.
+#
+# Publications of interest:
+# Giavarina, Understanding Bland Altman analysis, Biochemica Medica, 25(2), pp.141-151, 2015
+# http://www.biochemia-medica.com/en/journal/25/2/10.11613/BM.2015.015
+# Bland & Altman, Statistical Methods for Assessing Agreement between two Methods, 327(8476), pp. 307-310, 1986
+# http://www.sciencedirect.com/science/article/pii/S0140673686908378
 
 #   Copyright 2018 Jordan Van Beeck
 
@@ -57,11 +63,9 @@ def convert_uncert_df_to_nom_err(df):
     return nom,err
 
 def f_ODR(B, x):
-    '''Linear function for orthogonal distance regression: y = m*x + b'''
+    # Linear function for orthogonal distance regression: y = m*x + b
     # B is a vector of the parameters.
     # x is an array of the current x values.
-    # x is in the same format as the x passed to Data or RealData.
-    #
     # Return an array in the same format as y, that can be passed to Data or RealData.
     return B[0]*x + B[1]
 
@@ -87,7 +91,8 @@ def generate_fit_models(nom,err,x_variable,weighted):
     res = mod.fit()
     RLM_res = RLM_mod.fit()
     odr_res = odr_mod.run()
-    #odr_res.pprint()
+    # Generate a printout of the ODR results (commented out for now)
+    # odr_res.pprint()
     # generate residuals and corresponding errors on the residual, to be used in ODR fit plot
     residual_odr,sigma_odr = calc_residual_sigma_odr(odr_res,nom[x_variable].values,
                                                      nom['Difference'].values,
@@ -103,14 +108,15 @@ def calc_residual_sigma_odr(output,x_data,y_data,x_sigma,y_sigma):
     p = output.beta
     delta   = output.delta   # estimated x-component of the residuals
     epsilon = output.eps     # estimated y-component of the residuals
-    # (dx_star,dy_star) are the projections of x_sigma and y_sigma onto
-    #    the residual line, i.e.  he differences in x & y between the data
-    #    point and the point where the orthogonal residual line intersects
-    #    the ellipse' created by x_sigma & y_sigma.
+    #    (dx_star,dy_star) are the projections of the errors of x and y onto
+    #    the residual line, respectively, i.e. the differences in x & y
+    #    between the data point and the point where the orthogonal residual
+    #    line intersects the ellipse' created by x_sigma & y_sigma.
     dx_star = ( x_sigma*np.sqrt( ((y_sigma*delta)**2) /
                     ( (y_sigma*delta)**2 + (x_sigma*epsilon)**2 ) ) )
     dy_star = ( y_sigma*np.sqrt( ((x_sigma*epsilon)**2) /
                     ( (y_sigma*delta)**2 + (x_sigma*epsilon)**2 ) ) )
+    # calculat the 'total projected uncertainty' based on these projections
     sigma_odr = np.sqrt(dx_star**2 + dy_star**2)
     # residual is positive if the point lies above the fitted curve,
     #             negative if below
@@ -133,9 +139,14 @@ def Bland_Altman_main(plx_df,method1,method2,weighted = True):
     if len(plx_df) > 6:
         for i in range(0,6):
             for j in range(i+1,6):
+                # obtain the names of the different methods (different dereddening methods, for the different PML relations)
+                methodname1 = methods[i]
+                methodname2 = methods[j]
+                # beta = differences of parallaxes, alfa = means of parallaxes, GAIA = gaia parallaxes
                 beta = pd.DataFrame(plx_df.iloc[i].values - plx_df.iloc[j].values,index=stars,columns=['Difference'])
                 alfa = pd.DataFrame((plx_df.iloc[i].values + plx_df.iloc[j].values)/2.,index=stars,columns=['Mean'])
                 GAIA = pd.DataFrame(plx_df.loc['GAIA'].values, index=stars,columns=['Reference'])
+                # concatenate the different dataframes into one encompassing dataframe
                 plot_df = pd.concat([beta,alfa,GAIA],axis='columns')
                 if re.search('(Sesar)',methods[i]):
                     # select only RRab stars, since Sesar relation only applies to those
@@ -148,17 +159,16 @@ def Bland_Altman_main(plx_df,method1,method2,weighted = True):
                     # Do the actual fitting
                     X,res,mod,RLM_res,RLM_mod,iv_u,iv_l,odr_res,residual_odr,sigma_odr = generate_fit_models(nom,err,'Mean',weighted)
                     # Generate the Bland-Altman/Krouwer plots
-                    Bland_Altman_Krouwer_plot(plx_df,nom,err,X,res,iv_u,iv_l,RLM_res,
-                                              odr_res,sigma_odr,residual_odr,method1,
-                                              method2=method2)
+                    Bland_Altman_Krouwer_plot(plt_plx_df,nom,err,X,res,iv_u,iv_l,RLM_res,
+                                              odr_res,sigma_odr,residual_odr,methodname1,
+                                              method2=methodname2)
                     # Generate normality histograms
-                    Normality_histogram(nom['Difference'],method1,method2=method2)
+                    Normality_histogram(nom['Difference'],methodname1,method2=methodname2)
                     # Generate normality assessments
-                    Normality_tests(nom['Difference'],method1)
-                    Normality_tests(nom['Difference'],method2)
+                    Normality_tests(nom['Difference'],methodname1)
+                    Normality_tests(nom['Difference'],methodname2)
                     # Generate regression diagnostics plots
                     regression_diagnostics_plot(mod,X,plt_alfa,plt_beta,plt_plx_df,'Mean',weighted,'Tukey')
-
                 else:
                     # convert df input containing ufloats to readable output
                     nom,err = convert_uncert_df_to_nom_err(plot_df)
@@ -166,13 +176,13 @@ def Bland_Altman_main(plx_df,method1,method2,weighted = True):
                     X,res,mod,RLM_res,RLM_mod,iv_u,iv_l,odr_res,residual_odr,sigma_odr = generate_fit_models(nom,err,'Mean',weighted)
                     # Generate the Bland-Altman/Krouwer plots
                     Bland_Altman_Krouwer_plot(plx_df,nom,err,X,res,iv_u,iv_l,RLM_res,
-                                              odr_res,sigma_odr,residual_odr,method1,
-                                              method2=method2)
+                                              odr_res,sigma_odr,residual_odr,methodname1,
+                                              method2=methodname2)
                     # Generate normality histograms
-                    Normality_histogram(nom['Difference'],method1,method2=method2)
+                    Normality_histogram(nom['Difference'],methodname1,method2=methodname2)
                     # Generate normality assessments
-                    Normality_tests(nom['Difference'],method1)
-                    Normality_tests(nom['Difference'],method2)
+                    Normality_tests(nom['Difference'],methodname1)
+                    Normality_tests(nom['Difference'],methodname2)
                     # Generate regression diagnostics plots
                     regression_diagnostics_plot(mod,X,alfa,beta,plx_df,'Mean',weighted,'Tukey')
         return
@@ -180,13 +190,15 @@ def Bland_Altman_main(plx_df,method1,method2,weighted = True):
     # PML + GAIA method comparison = 3 + 1 + 1 + 1 rows
     else:
         for i in range(3):
+            # obtain method name (distinction between dereddening)
+            methodname = methods[i]
+            # beta = differences of parallaxes, alfa = means of parallaxes, alfa_Krouwer = gaia parallax
             beta = pd.DataFrame(plx_df.loc['GAIA'].values - plx_df.iloc[i].values, index=stars,columns=['Difference'])
             alfa_Krouwer = pd.DataFrame(plx_df.loc['GAIA'].values, index=stars,columns=['Reference'])
             alfa = pd.DataFrame((plx_df.loc['GAIA'].values + plx_df.iloc[i].values)/2., index=stars,columns=['Mean'])
+            # concatenate the different dataframes into one encompassing dataframe
             plot_df = pd.concat([beta,alfa_Krouwer,alfa],axis='columns')
             if re.search('(Sesar)',methods[i]):
-                # obtain method name (distinction between dereddening)
-                methodname = methods[i]
                 # select only RRab stars, since Sesar relation only applies to those
                 plt_df = plot_df[plx_df.loc['RRAB/RRC']=='RRAB']
                 plt_alfa = alfa[plx_df.loc['RRAB/RRC']=='RRAB']
@@ -199,11 +211,11 @@ def Bland_Altman_main(plx_df,method1,method2,weighted = True):
                 X,res,mod,RLM_res,RLM_mod,iv_u,iv_l,odr_res,residual_odr,sigma_odr = generate_fit_models(nom,err,'Mean',weighted)
                 X_K,res_K,mod_K,RLM_res_K,RLM_mod_K,iv_u_K,iv_l_K,odr_res_K,residual_odr_K,sigma_odr_K = generate_fit_models(nom,err,'Reference',weighted)
                 # Generate the Bland-Altman/Krouwer plots
-                Bland_Altman_Krouwer_plot(plx_df,nom,err,X_K,res_K,iv_u_K,iv_l_K,
+                Bland_Altman_Krouwer_plot(plt_plx_df,nom,err,X_K,res_K,iv_u_K,iv_l_K,
                                           RLM_res_K,odr_res_K,sigma_odr_K,
                                           residual_odr_K,methodname)
-                Bland_Altman_Krouwer_plot(plx_df,nom,err,X,res,iv_u,iv_l,RLM_res,
-                                          methodname,odr_res,sigma_odr,residual_odr,method2=method2)
+                Bland_Altman_Krouwer_plot(plt_plx_df,nom,err,X,res,iv_u,iv_l,RLM_res,
+                                          odr_res,sigma_odr,residual_odr,methodname,method2=method2)
                 # Generate normality histograms
                 Normality_histogram(nom['Difference'],methodname,method2='GAIA Reference')
                 # Generate normality assessments
@@ -211,10 +223,7 @@ def Bland_Altman_main(plx_df,method1,method2,weighted = True):
                 # Generate regression diagnostics plots                  
                 regression_diagnostics_plot(mod,X,plt_alfa,plt_beta,plt_plx_df,'Mean',weighted,'Tukey')
                 regression_diagnostics_plot(mod_K,X_K,plt_alfa_Krouwer,plt_beta,plt_plx_df,'Reference',weighted,'Krouwer')
-
             else:
-                # obtain method name (distinction between dereddening)
-                methodname = methods[i]
                 # convert df input containing ufloats to readable output
                 nom,err = convert_uncert_df_to_nom_err(plot_df)
                 # Do the actual fitting
@@ -239,7 +248,7 @@ def regression_diagnostics_plot(mod,X,plotalfa,plotbeta,df,x_string,weighted,plo
     # get nominal values
     alfa,_ = convert_uncert_df_to_nom_err(plotalfa)
     beta,_ = convert_uncert_df_to_nom_err(plotbeta)
-    # if weighted convert the fitted weighted parameters to a format that is readible for the diagnostics plot tools
+    # if weighted fit, convert the fitted weighted parameters to a format that is readible for the diagnostics plot tools (so that one displays the diagnostics for the weighted parameters)
     if weighted:
         res_infl_mod = sm.OLS(pd.DataFrame(mod.wendog,index=list(alfa.index),columns=['Difference']),
                               pd.DataFrame(mod.wexog,index=list(alfa.index),columns=['Intercept',x_string]))
@@ -260,6 +269,7 @@ def regression_diagnostics_plot(mod,X,plotalfa,plotbeta,df,x_string,weighted,plo
     axes[1,1].set_xlabel(x_string + " " + r'$\varpi$' + " (mas)")
     axes[1,1].set_ylabel("Residual " + r'$\varpi$' + " (mas)")
     axes[1,1].set_title("Residual Plot (" + plotstring + ")")
+    # Generate extra legend displaying whether the RR Lyrae star is Blazhko-modulated or not
     third_legend = plt.legend(handles=patchList, frameon=True, fancybox=True, framealpha=1.0)
     third_frame = third_legend.get_frame()
     third_frame.set_facecolor('White')
@@ -268,8 +278,8 @@ def regression_diagnostics_plot(mod,X,plotalfa,plotbeta,df,x_string,weighted,plo
 
 def Normality_histogram(differences,method1,method2='GAIA Reference'):
     # create a histogram of the differences, containing a Kernel Density Estimation and normal distribution fit,
-    # in order to assess normality of the differences distribution...
-    # (Need normality in this parameter in order to use the prediction/confidence intervals, as well as limits of agreement!)
+    # in order to assess normality of the differences distribution.
+    # (Need normality in this parameter in order to use the prediction/confidence intervals, as well as limits of agreement! See Bland-Altman publications mentioned on top.)
     sns.set_style('darkgrid')
     plt.figure()
     sns.distplot(differences) # histogram + Kernel Density estimation ("KDE")
@@ -282,9 +292,7 @@ def Normality_histogram(differences,method1,method2='GAIA Reference'):
     return
 
 def Pair_grid(df_list,df,GAIA):
-    # similar to the pair plot but with 1D and 2D KDE's
-    
-    # use first item/method in dataframe list
+    # use first item/method in dataframe list to obtain the star list
     totdf = df_list[0]
     # create dataframe containing GAIA data
     GAIAdf = pd.DataFrame(GAIA.reshape(1,len(GAIA)),index=["GAIA"],columns=list(totdf))
@@ -294,7 +302,7 @@ def Pair_grid(df_list,df,GAIA):
     # construct the final dataframe containing results of all methods and GAIA
     totdf = pd.concat([totdf,GAIAdf])
     # obtaining partial dataframes consisting of results using different dereddening methods
-    script = totdf[~totdf.index.to_series().str.contains('(_SFD)|(_S_F)')] # our script
+    script = totdf[~totdf.index.to_series().str.contains('(_SFD)|(_S_F)')] # our dereddening script
     S_F = pd.concat([totdf[totdf.index.to_series().str.contains('(_SFD)')],GAIAdf]) # S_F dust map (have to add GAIA data again)
     SFD = pd.concat([totdf[totdf.index.to_series().str.contains('(_S_F)')],GAIAdf]) # SFD dust map (have to add GAIA data again)
     # Loop over the results list using different dereddening methods, generating the pair grid for each
@@ -320,25 +328,25 @@ def Pair_grid(df_list,df,GAIA):
 def Normality_tests(differences,method): 
     # print the output of different statistical tests for normality
     shap = stats.shapiro(differences)
-    print "Shapiro-Wilk Results Method " + method + ":"
-    print shap
-    print " "
+    print("Shapiro-Wilk Results Method " + method + ":")
+    print(shap)
+    print(" ")
     ands = stats.anderson(differences)
-    print "Anderson-Darling Results Method " + method + ":"
-    print ands
-    print " "
+    print("Anderson-Darling Results Method " + method + ":")
+    print(ands)
+    print(" ")
     kolm = stats.kstest(differences, 'norm')
-    print "Kolmogorov-Smirnov Results Method " + method + ":"
-    print kolm
-    print " "
+    print("Kolmogorov-Smirnov Results Method " + method + ":")
+    print(kolm)
+    print(" ")
     if len(differences) > 7:
         dagos = stats.normaltest(differences)
-        print "D'agostino-Pearson Results Method " + method + ":"
-        print dagos
-        print " "
+        print("D'agostino-Pearson Results Method " + method + ":")
+        print(dagos)
+        print(" ")
     else:
-        print "No D'agostino-Pearson method possible for method " + method
-        print " "
+        print("No D'agostino-Pearson method possible for method " + method)
+        print(" ")
     return
 
 def difference_plot(df_diff,df_e_diff,method1,method2,degreesoffreedom,Critical_t,x_string):
@@ -389,7 +397,7 @@ def difference_plot(df_diff,df_e_diff,method1,method2,degreesoffreedom,Critical_
     return
     
 def generate_sorted_df_fit(df_diff,df_e_diff,fit_res,robust_fit_res,dmatrix,predbound_up,predbound_down,odr_res,x_string):
-    # generate the different fit prediction values and put em in a dataframe
+    # generate the different fit prediction values and put them in a dataframe
     OLS_predict = fit_res.predict(dmatrix)
     RLS_predict = robust_fit_res.predict(dmatrix)
     ODR_predict = odr_res.y
@@ -412,6 +420,7 @@ def generate_sorted_df_fit(df_diff,df_e_diff,fit_res,robust_fit_res,dmatrix,pred
 
 
 def fit_plot(sorteddf,odr_res,sigma_odr,residual_odr,x_string,method,additional_method=''):
+    # set the plotting style
     sns.set_style('darkgrid')
     ODR_fit_plot(sorteddf[x_string],sorteddf['Difference'],sorteddf['e_'+x_string],
                  sorteddf['e_Difference'],odr_res,sigma_odr,residual_odr,x_string,
@@ -452,15 +461,13 @@ def fit_plot(sorteddf,odr_res,sigma_odr,residual_odr,x_string,method,additional_
 def ODR_fit_plot(x_data,y_data,x_sigma,y_sigma,output,sigma_odr,residual_odr,x_string,method,additional_method=''):
     # create figure
     fig = plt.figure()
-    
-    # 3 rows, 1 column, subplot 1
-    #   3 rows are declared, but there are only 2 plots; this leaves room
-    #        for text in the empty 3rd row
+    # Make the subplot
     fit = fig.add_subplot(211)
-    # remove tick labels from upper plot (for clean look)
+    # remove tick labels from upper plot
     fit.set_xticklabels( () )
+    # set y-label
     plt.ylabel(r'$\varpi$' + ' Difference')
-
+    # set title
     if x_string=='Reference':
         plt.title('Fitted (ODR) ' + r'$\varpi$' + ' Differences ' + '(Krouwer, ' + method +')')
     else:
@@ -468,34 +475,39 @@ def ODR_fit_plot(x_data,y_data,x_sigma,y_sigma,output,sigma_odr,residual_odr,x_s
             plt.title('Fitted (ODR) ' + r'$\varpi$' + ' Differences ' + '(Tukey, ' + method + ', GAIA)')
         else:
             plt.title('Fitted (ODR) ' + r'$\varpi$' + ' Differences ' + '(Tukey, ' + method + ', ' + additional_method + ')')
-    # Plot data as red circles, and fitted function as (default) line.
-    #   For a smooth look,generate many x values for plotting the model
+    # Generate linspace for plotting
     stepsize = (max(x_data)-min(x_data))/1000.
+    # set plotting margin to 50 times the stepsize (beyond and before max and min, respectively)
     margin = 50*stepsize
     x_model = np.arange( min(x_data)-margin,max(x_data)+margin,
                                     stepsize)
+    # plot the ODR fit
     fit.plot(x_data,y_data,'ro', x_model, f_ODR(output.beta,x_model),markersize=4,label='')
-    # Add error bars on data as red crosses.
+    # Add error bars
     fit.errorbar(x_data, y_data, xerr=x_sigma, yerr=y_sigma, fmt='r+', label='Differences')
+    # set y-scale to linear
     fit.set_yscale('linear')
-    #   draw starting guess (in our case just the x-axis) as dashed green line
+    # draw starting guess (in our case just the x-axis) as dashed green line
     fit.axhline(y=0, c='g',linestyle="-.", label="No Diff")
     
     # output.xplus = x + delta
     a = np.array([output.xplus,x_data])
     # output.y = f(p, xfit), or y + epsilon
     b = np.array([output.y,y_data])
+    # plot the actual fit
     fit.plot( a[0][0], b[0][0], 'b-', label= 'Fit')
+    # plot the residuals
     fit.plot(np.array([a[0][0],a[1][0]]),np.array([b[0][0],b[1][0]]),'k--', label = 'Residuals')
     for i in range(1,len(y_data)):
         fit.plot( a[0][i], b[0][i], 'b-')
-        fit.plot( np.array([a[0][i],a[1][i]]),np.array([b[0][i],b[1][i]]),'k--')    
+        fit.plot( np.array([a[0][i],a[1][i]]),np.array([b[0][i],b[1][i]]),'k--')
+    # plot the legend
     legend = fit.legend(frameon=True, fancybox=True, framealpha=1.0)
     frame= legend.get_frame()
     frame.set_facecolor('White')
     
     # separate plot to show residuals
-    residuals = fig.add_subplot(212) # 3 rows, 1 column, subplot 2
+    residuals = fig.add_subplot(212)
     residuals.errorbar(x=x_data,y=residual_odr,yerr=sigma_odr,fmt='r+',label = "Residuals")
     # make sure residual plot has same x axis as fit plot
     residuals.set_xlim(fit.get_xlim())
@@ -506,8 +518,7 @@ def ODR_fit_plot(x_data,y_data,x_sigma,y_sigma,output,sigma_odr,residual_odr,x_s
         plt.xlabel('GAIA ' + r'$\varpi$')
     else:
         plt.xlabel(x_string + ' ' + r'$\varpi$')
-    # These data look better in 'plain', not scientific, notation, and if
-    #   the tick labels are not offset by a constant (as done by default).
+    # set a plain tick-label style
     plt.ticklabel_format(style='plain', useOffset=False, axis='x')
     plt.ylabel('Residual ' + r'$\varpi$' + ' Difference')
     return
@@ -519,6 +530,7 @@ def Bland_Altman_Krouwer_plot(df_plx,df_diff,df_e_diff,dmatrix,fit_res,predbound
     df_diff['Blazhko/RRLyr'] = pd.Series(df_plx.loc['Blazhko/RRLyr'].values, index=df_diff.index)
     df_e_diff['Blazhko/RRLyr'] = pd.Series(df_plx.loc['Blazhko/RRLyr'].values, index=df_e_diff.index)
 
+    # generate the degrees of freedom, as well as the critical value of the student's t distribution
     degreesoffreedom = df_diff.shape[0]
     p = 0.95
     Critical_t = stats.t.ppf(p, degreesoffreedom-1)
@@ -527,10 +539,8 @@ def Bland_Altman_Krouwer_plot(df_plx,df_diff,df_e_diff,dmatrix,fit_res,predbound
         # Generate the Tukey plot
         difference_plot(df_diff,df_e_diff,method1,method2,degreesoffreedom,Critical_t,'Mean')        
         # Make a sorted df containing the information needed for a fit plot
-        if len(method2) == 0:
-            sorteddf = generate_sorted_df_fit(df_diff,df_e_diff,fit_res,robust_fit_res,dmatrix,predbound_up,predbound_down,odr_res,'Mean')
-        else:
-            sorteddf = generate_sorted_df_fit(df_diff,df_e_diff,fit_res,robust_fit_res,dmatrix,predbound_up,predbound_down,odr_res,'Mean')
+        sorteddf = generate_sorted_df_fit(df_diff,df_e_diff,fit_res,robust_fit_res,
+                                          dmatrix,predbound_up,predbound_down,odr_res,'Mean')
         # Make new figure showing the fits to the differences
         fit_plot(sorteddf,odr_res,sigma_odr,residual_odr,'Mean',method1,additional_method=method2)  
     else:
